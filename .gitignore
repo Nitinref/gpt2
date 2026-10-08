@@ -1,0 +1,45 @@
+# Local model weights and generated checkpoints
+/weights/
+*.safetensors
+*.safetensors.index.json
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.onnx
+
+# Generated parameter exports
+*.weight.txt
+*.bias.txt
+
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Native build output
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
