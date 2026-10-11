@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cassert>
 #include <span>
+#include <stdexcept>
 
 using namespace std;
 using tensor = vector<float>;
@@ -52,6 +53,178 @@ tensor layerNorm(
 
     return output;
 }
+
+struct QKVWeights
+{
+    tensor weights;
+    tensor bias;
+};
+
+tensor linearProjection(
+    std::span<const float> input,
+    const QKVWeights &qkv)
+{
+
+    const int inputSize = 768;
+    const int outputSize = 2304;
+
+    assert(input.size() == inputSize);
+    assert(qkv.weights.size() == inputSize * outputSize);
+    assert(qkv.bias.size() == outputSize);
+
+    tensor output(outputSize, 0.0f);
+
+    for (int j = 0; j < outputSize; j++)
+    {
+        float sum = qkv.bias[j];
+
+        for (int i = 0; i < inputSize; i++)
+        {
+            sum += input[i] *
+                   qkv.weights[i * outputSize + j];
+        }
+
+        output[j] = sum;
+    }
+
+    return output;
+}
+
+QKVWeights
+loadQKVWeights()
+{
+    QKVWeights qkv;
+
+    ifstream weightFile(
+        "../weights/transformer.h.0.attn.c_attn.weight.txt");
+
+    ifstream biasFile(
+        "../weights/transformer.h.0.attn.c_attn.bias.txt");
+
+    if (!weightFile.is_open() || !biasFile.is_open())
+    {
+        throw runtime_error("Error opening QKV weight or bias file");
+    }
+
+    float value;
+
+    while (weightFile >> value)
+    {
+        qkv.weights.push_back(value);
+    }
+
+    while (biasFile >> value)
+    {
+        qkv.bias.push_back(value);
+    }
+
+    return qkv;
+}
+
+float dotProduct(
+    std::span<const float> Q,
+    std::span<const float> K)
+{
+    assert(Q.size() == K.size());
+
+    float sum = 0.0f;
+
+    for (int i = 0; i < Q.size(); i++)
+    {
+        sum += Q[i] * K[i];
+    }
+
+    return sum;
+}
+
+tensor softmax(std::span<const float> scores)
+{
+    tensor output(scores.size());
+    float sum = 0.0f;
+
+    for (int i = 0; i < scores.size(); i++)
+    {
+        output[i] = std::exp(scores[i]);
+        sum += output[i];
+    }
+
+    for (int i = 0; i < output.size(); i++)
+    {
+        output[i] /= sum;
+    }
+
+    return output;
+}
+
+tensor weightedSum(
+    std::span<const float> weights,
+    const std::vector<tensor> &values)
+{
+    assert(weights.size() == values.size());
+
+    const int headDim = 64;
+    tensor output(headDim, 0.0f);
+
+    for (int token = 0; token < weights.size(); token++)
+    {
+        for (int i = 0; i < headDim; i++)
+        {
+            output[i] += weights[token] * values[token][i];
+        }
+    }
+
+    return output;
+}
+
+tensor calculateAttention(
+    int queryIndex,
+    int headIndex,
+    const std::vector<std::vector<tensor>> &allHeadQ,
+    const std::vector<std::vector<tensor>> &allHeadK,
+    const std::vector<std::vector<tensor>> &allHeadV)
+{
+    std::vector<float> scores;
+
+    for (int token = 0; token <= queryIndex; token++)
+    {
+        float score = dotProduct(
+            allHeadQ[queryIndex][headIndex],
+            allHeadK[token][headIndex]);
+
+        score /= std::sqrt(64.0f);
+        scores.push_back(score);
+    }
+
+    tensor weights = softmax(scores);
+
+    std::vector<tensor> values;
+
+    for (int token = 0; token <= queryIndex; token++)
+    {
+        values.push_back(allHeadV[token][headIndex]);
+    }
+
+    return weightedSum(weights, values);
+}
+
+
+
+tensor concatenateHeads(const std::vector<tensor>& headOutputs)
+{
+    tensor combined;
+
+    for (const tensor& head : headOutputs)
+    {
+        combined.insert(
+            combined.end(),
+            head.begin(),
+            head.end()
+        );
+    }
+
+    return combined;
+}
+
 
 int main()
 {
@@ -157,15 +330,84 @@ int main()
             beta);
 
         normalizedEmbeddings.push_back(normalized);
-        cout << "Normalized values: " << normalized.size() << endl;
     }
-    cout << "Normalized tokens stored: "
-         << normalizedEmbeddings.size() << endl;
 
-    cout << "Values in first normalized token: "
-         << normalizedEmbeddings[0].size() << endl;
-    cout << "Total tokens processed: " << inputEmbeddings.size() << endl;
-    cout << "Numbers per token: " << inputEmbeddings[0].size() << endl;
+    const int HEAD_DIM = 64;
+
+    vector<vector<tensor>> allHeadQ;
+    vector<vector<tensor>> allHeadK;
+    vector<vector<tensor>> allHeadV;
+
+    QKVWeights qkv = loadQKVWeights();
+
+    const int EMBED_SIZE = 768;
+
+    for (int tokenIndex = 0;
+         tokenIndex < normalizedEmbeddings.size();
+         tokenIndex++)
+    {
+        const vector<float> &normalizedToken =
+            normalizedEmbeddings[tokenIndex];
+
+        tensor qkvOutput = linearProjection(normalizedToken, qkv);
+
+        // Abhi yahin se Q, K, V split karenge
+
+        span<const float> Q(qkvOutput.data(), 768);
+
+        span<const float> K(qkvOutput.data() + 768, 768);
+
+        span<const float> V(qkvOutput.data() + 1536, 768);
+
+        const int HEAD_DIM = 64;
+
+        // First head: Q, K, V ke pehle 64 values
+
+        vector<tensor> tokenHeadsQ;
+        vector<tensor> tokenHeadsK;
+        vector<tensor> tokenHeadsV;
+
+        for (int head = 0; head < 12; head++)
+        {
+            int start = head * HEAD_DIM;
+
+            span<const float> headQ(Q.data() + start, HEAD_DIM);
+            span<const float> headK(K.data() + start, HEAD_DIM);
+            span<const float> headV(V.data() + start, HEAD_DIM);
+
+            tokenHeadsQ.emplace_back(headQ.begin(), headQ.end());
+            tokenHeadsK.emplace_back(headK.begin(), headK.end());
+            tokenHeadsV.emplace_back(headV.begin(), headV.end());
+        }
+
+        allHeadQ.push_back(tokenHeadsQ);
+        allHeadK.push_back(tokenHeadsK);
+        allHeadV.push_back(tokenHeadsV);
+    }
+
+vector<tensor> catHeadOutputs;
+
+for (int head = 0; head < 12; head++)
+{
+    tensor output = calculateAttention(
+        1,
+        head,
+        allHeadQ,
+        allHeadK,
+        allHeadV
+    );
+
+    catHeadOutputs.push_back(output);
+}
+
+cout << "Number of head outputs: "
+     << catHeadOutputs.size() << endl;
+
+     tensor combinedOutput = concatenateHeads(catHeadOutputs);
+
+cout << "Combined output size: "
+     << combinedOutput.size() << endl;
+
 
     return 0;
 }

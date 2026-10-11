@@ -1,11 +1,13 @@
-from transformers import GPT2Tokenizer
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
-tokenizer = GPT2Tokenizer.from_pretrained("../weights/tokenizer")
 
-text = "A cat is on the mat."
+model = GPT2LMHeadModel.from_pretrained("gpt2")
 
-tokens = tokenizer.tokenize(text)
-ids = tokenizer.encode(text)
+for name, param in model.named_parameters():
+    print(name, tuple(param.shape))
+    values = param.detach().numpy().flatten()
+    with open(f"../weights/{name}.txt", "w") as f:
+        f.write(" ".join(str(v) for v in values))
 
-print("Tokens:", tokens)
-print("IDs:", ids)
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+tokenizer.save_pretrained("../weights/tokenizer")
